@@ -669,6 +669,11 @@
       <label class="form-label" style="margin-bottom:6px;display:block;">Observaciones por dimensión</label>
       <div id="edit-obs-list" style="display:flex;flex-direction:column;gap:8px;"></div>
     </div>
+    <div style="margin-bottom:14px;">
+      <label class="form-label" style="margin-bottom:6px;display:block;">💬 Observaciones de Áreas Indirectas</label>
+      <div id="edit-obs-generales-list" style="display:flex;flex-direction:column;gap:8px;margin-bottom:8px;"></div>
+      <button type="button" class="btn-secondary" onclick="agregarObsGeneralEdit('','',document.getElementById('edit-obs-generales-list'))" style="font-size:0.8rem;padding:7px 14px;">+ Agregar área</button>
+    </div>
     <div class="modal-actions">
       <button class="btn-secondary" onclick="cerrarEditar()">Cancelar</button>
       <button class="btn-success" onclick="guardarEdicion()">💾 Guardar cambios</button>
@@ -1242,7 +1247,7 @@ function renderInformeSemanas() {
 }
 
 // ================= INFORMES =================
-function buildInformeHTML(data, titulo, tipo='semanal') {
+async function buildInformeHTML(data, titulo, tipo='semanal') {
   if (!data.length) return '<p>No hay datos para el período seleccionado.</p>';
 
   const promDimGen = (key) => {
@@ -1285,12 +1290,36 @@ function buildInformeHTML(data, titulo, tipo='semanal') {
 
   const nivelTexto = promG >= 4.5 ? 'muy satisfactorio' : promG >= 4 ? 'satisfactorio' : promG >= 3 ? 'regular' : 'bajo';
   const tendencia = promG >= 4
-    ? 'La percepción general de los pacientes durante el período fue positiva, evidenciando una experiencia de atención adecuada en la mayoría de las áreas evaluadas.'
+    ? 'La percepción general de los pacientes fue positiva, evidenciando una experiencia adecuada en la mayoría de las áreas evaluadas.'
     : promG >= 3
-    ? 'La percepción general resultó moderada, con oportunidades concretas de mejora en algunas dimensiones que requieren atención por parte del equipo.'
-    : 'La percepción general fue desfavorable, lo que demanda una revisión urgente de los procesos de atención y una respuesta institucional coordinada.';
+    ? 'La percepción general resultó moderada, con oportunidades de mejora en algunas dimensiones.'
+    : 'La percepción general fue desfavorable y demanda una revisión urgente de los procesos de atención.';
 
-  // Sintetizar observaciones por área (parafraseadas, no textuales)
+  // Fortalezas >= 4.0, Mejoras < 4.0
+  const fortalezasDims = DIMS_ALL.filter(d => { const p = promDimGen(d.key); return p !== null && p >= 4.0; });
+  const mejorasDims = DIMS_ALL.filter(d => { const p = promDimGen(d.key); return p !== null && p < 4.0; });
+
+  // Áreas indirectas — siempre mostrar Admisión y Mesa de Atención
+  const obsGenPorArea = { 'Admisión': [], 'Mesa de Atención': [] };
+  data.forEach(e => (e.obsGenerales || []).forEach(og => {
+    const area = (og.area || 'Sin área').trim();
+    if (!obsGenPorArea[area]) obsGenPorArea[area] = [];
+    if (og.texto) obsGenPorArea[area].push(og.texto);
+  }));
+
+  const areasIndirectasMejora = Object.entries(obsGenPorArea).filter(([, txts]) =>
+    txts.some(t => /mal|demor|problem|falta|insatisf|reclam|queja|molest|negativ/i.test(t))
+  ).map(([area]) => area);
+
+  const areasComp = [];
+  if (hasEsp) areasComp.push('Médicos Especialistas');
+  if (hasFisio) areasComp.push('Fisioterapia y Kinesiología');
+  Object.keys(obsGenPorArea).forEach(a => { if (!areasComp.includes(a)) areasComp.push(a); });
+  const areasCompTexto = areasComp.length
+    ? ` En el período también se relevó la intervención de: ${areasComp.join(', ')}.`
+    : '';
+
+  // Observaciones por dimensión
   const obsPorDim = {};
   data.forEach(e => {
     DIMS_ALL.forEach(d => {
@@ -1299,61 +1328,57 @@ function buildInformeHTML(data, titulo, tipo='semanal') {
     });
   });
 
-  // Parafrasear: agrupar y resumir conceptualmente en lugar de citar literal
-  function parafrasear(textos, area) {
+  // Parafrasear usando puntaje numérico (no regex sobre texto)
+  async function parafrasearConIA(textos, area, puntaje=null) {
     if (!textos || !textos.length) return null;
-    const n = textos.length;
-    const positivos = textos.filter(t => /buen|excelent|conforme|satisf|positiv|destac|correcto|agradab/i.test(t)).length;
-    const negativos = textos.filter(t => /mal|demor|problem|falta|insatisf|reclam|queja|molest|negativ|ruido|sucio|frio|calor/i.test(t)).length;
-    if (n === 1) {
-      if (positivos) return `Los pacientes expresaron valoraciones positivas respecto a ${area}, destacando aspectos vinculados a la atención recibida.`;
-      if (negativos) return `Se recibieron comentarios que señalan aspectos a mejorar en ${area}, principalmente relacionados con la experiencia durante la atención.`;
-      return `Se registraron observaciones sobre ${area} que pueden aportar información cualitativa relevante para el seguimiento del área.`;
-    }
-    if (positivos > negativos) return `La mayoría de los comentarios sobre ${area} fueron favorables, con ${positivos} de ${n} pacientes destacando aspectos positivos de la atención.`;
-    if (negativos > positivos) return `Se identificaron oportunidades de mejora en ${area}: ${negativos} de ${n} pacientes señalaron aspectos que requieren revisión por parte del equipo.`;
-    return `Los comentarios sobre ${area} fueron mixtos: se registraron tanto valoraciones positivas como observaciones de mejora, lo que sugiere una experiencia heterogénea entre los pacientes atendidos.`;
+    try {
+      const contextoP = puntaje !== null
+        ? `El puntaje promedio de esta área es ${puntaje.toFixed(1)}/5.0.`
+        : '';
+      const prompt = `Sos redactor de informes institucionales de salud. Se te presentan ${textos.length} observación/es sobre el área "${area}" registradas por pacientes internados. ${contextoP} Redactá UN SOLO párrafo breve (2-3 oraciones) en tono institucional, SIN citar frases textuales, parafraseando el contenido de manera coherente con el puntaje indicado. Solo respondé con el párrafo, sin aclaraciones.\n\nObservaciones:\n${textos.map((t, i) => `${i+1}. ${t}`).join('\n')}`;
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 250, messages: [{ role: 'user', content: prompt }] })
+      });
+      const json = await res.json();
+      return json.content?.[0]?.text?.trim() || null;
+    } catch(e) { return null; }
   }
 
-  const obsRowsHTML = Object.entries(obsPorDim).map(([dim, txts]) => {
-    const p = parafrasear(txts, dim);
-    return p ? `<div class="obs-card"><strong>${dim}:</strong> ${p}</div>` : '';
-  }).join('');
+  // Parafrasear observaciones por dimensión — pasamos el puntaje para coherencia
+  const obsRowsData = [];
+  for (const [dim, txts] of Object.entries(obsPorDim)) {
+    const dimObj = DIMS_ALL.find(d => d.label === dim);
+    const puntaje = dimObj ? promDimGen(dimObj.key) : null;
+    const p = await parafrasearConIA(txts, dim, puntaje);
+    if (p) obsRowsData.push({ dim, texto: p });
+  }
+  const obsRowsHTML = obsRowsData.length
+    ? obsRowsData.map(o => `<div class="obs-card"><strong>${o.dim}:</strong> ${o.texto}</div>`).join('')
+    : '<p style="color:#a0b0c0;">No se registraron observaciones cualitativas en este período.</p>';
 
-  // Áreas indirectas agrupadas y parafraseadas
-  const obsGenPorArea = {};
-  data.forEach(e => (e.obsGenerales || []).forEach(og => {
-    if (og.area || og.texto) {
-      const area = og.area || 'Sin área';
-      if (!obsGenPorArea[area]) obsGenPorArea[area] = [];
-      if (og.texto) obsGenPorArea[area].push(og.texto);
-    }
-  }));
-  const obsIndirectaHTML = Object.entries(obsGenPorArea).map(([area, txts]) => {
-    const p = parafrasear(txts, area);
-    return p ? `<div class="obs-card indirecta"><strong>${area}:</strong> ${p}</div>` : '';
-  }).join('');
+  // Parafrasear áreas indirectas — sin puntaje numérico, solo texto
+  const obsIndirectaRows = [];
+  for (const [area, txts] of Object.entries(obsGenPorArea)) {
+    const p = txts.length > 0 ? await parafrasearConIA(txts, area, null) : null;
+    obsIndirectaRows.push({ area, n: txts.length, texto: p });
+  }
+  // Áreas indirectas con mejora: solo las que tienen comentarios registrados
+  const areasIndirectasMejora = Object.entries(obsGenPorArea)
+    .filter(([, txts]) => txts.length > 0)
+    .map(([area]) => area);
+  const areasIndirectasHTML = obsIndirectaRows.map(o =>
+    `<div class="dim-row" style="background:var(--fondo);border-radius:6px;padding:8px 12px;margin:4px 0;flex-wrap:wrap;gap:6px;">
+      <div class="dim-label">📍 <strong>${o.area}</strong></div>
+      <span style="font-size:0.78rem;color:#7a8fa6;">${o.n} comentario${o.n!==1?'s':''} registrado${o.n!==1?'s':''}</span>
+      ${o.texto
+        ? `<p style="font-size:0.85rem;margin-top:6px;width:100%;color:#4a5e72;">${o.texto}</p>`
+        : '<p style="font-size:0.82rem;color:#a0b0c0;margin-top:4px;width:100%;">Sin comentarios registrados en este período.</p>'}
+    </div>`
+  ).join('');
 
-  // Servicios complementarios + áreas indirectas mencionadas
-  const areasComp = [];
-  if (hasEsp) areasComp.push('Médicos Especialistas');
-  if (hasFisio) areasComp.push('Fisioterapia y Kinesiología');
-  Object.keys(obsGenPorArea).forEach(a => { if (!areasComp.includes(a)) areasComp.push(a); });
-
-  // Síntesis englobando todo
-  const areasCompTexto = areasComp.length
-    ? ` Durante el recorrido también se relevó la intervención de servicios complementarios y áreas de soporte: ${areasComp.join(', ')}.`
-    : '';
-
-  // Fortalezas: >= 4.0, Mejoras: < 4.0
-  const fortalezasDims = DIMS_ALL.filter(d => { const p = promDimGen(d.key); return p !== null && p >= 4.0; });
-  const mejorasDims = DIMS_ALL.filter(d => { const p = promDimGen(d.key); return p !== null && p < 4.0; });
-  // Áreas indirectas con comentarios negativos como oportunidades de mejora adicionales
-  const areasIndirectasMejora = Object.entries(obsGenPorArea).filter(([, txts]) =>
-    txts.some(t => /mal|demor|problem|falta|insatisf|reclam|queja|molest|negativ/i.test(t))
-  ).map(([area]) => area);
-
-  // Build dim rows for servicios principales
+  // Dim rows principales
   const dimRowsHTML = DIMS.map(d => {
     const p = promDimGen(d.key);
     if (p === null) return '';
@@ -1366,15 +1391,11 @@ function buildInformeHTML(data, titulo, tipo='semanal') {
       <div class="dim-bar-wrap"><div class="dim-bar" style="width:${pct}%;background:${barColor(p)};"></div></div>
       <div class="dim-score" style="color:${barColor(p)}">${fmt(p)}</div>
       <span class="${tagClass(p)}">${tagLabel(p)}</span>
-    </div>
-    <div class="dim-dist">${distrib}</div>`;
+    </div><div class="dim-dist">${distrib}</div>`;
   }).join('');
 
-  // Build comp rows
-  const compRowsHTML = [
-    hasEsp ? DIMS_OPT.esp : null,
-    hasFisio ? DIMS_OPT.fisio : null
-  ].filter(Boolean).map(d => {
+  // Comp rows
+  const compRowsHTML = [hasEsp ? DIMS_OPT.esp : null, hasFisio ? DIMS_OPT.fisio : null].filter(Boolean).map(d => {
     const p = promDimGen(d.key);
     const n = data.filter(e => e.ratings[d.key]).length;
     if (p === null) return '';
@@ -1387,52 +1408,39 @@ function buildInformeHTML(data, titulo, tipo='semanal') {
       <div class="dim-bar-wrap"><div class="dim-bar" style="width:${pct}%;background:${barColor(p)};"></div></div>
       <div class="dim-score" style="color:${barColor(p)}">${fmt(p)}</div>
       <span class="${tagClass(p)}">${tagLabel(p)}</span>
-    </div>
-    <div class="dim-dist">${distrib}</div>`;
+    </div><div class="dim-dist">${distrib}</div>`;
   }).join('');
 
-  // Áreas indirectas trazabilidad
-  const areasIndirectasHTML = Object.entries(obsGenPorArea).map(([area, txts]) => {
-    const n = txts.length;
-    return `<div class="dim-row" style="background:var(--fondo);border-radius:6px;padding:6px 10px;margin:4px 0;">
-      <div class="dim-label">📍 ${area}</div>
-      <span style="font-size:0.78rem;color:#7a8fa6;">${n} comentario${n!==1?'s':''} registrado${n!==1?'s':''}</span>
-    </div>`;
-  }).join('') || '<p style="color:#a0b0c0;font-size:0.85rem;">Sin comentarios sobre áreas indirectas.</p>';
-
-  // Fortalezas texto
+  // Fortalezas
   let fortalezasHTML = '';
   if (fortalezasDims.length) {
     const nombres = fortalezasDims.map(d => `<strong>${d.label}</strong> (${fmt(promDimGen(d.key))}/5.0)`);
     fortalezasHTML = `<p>${nombres.length === 1
-      ? `El área con mejor desempeño consolidado fue ${nombres[0]}, lo que refleja una valoración consistentemente positiva por parte de los pacientes.`
-      : `Las áreas con mejor desempeño fueron ${nombres.slice(0,-1).join(', ')} y ${nombres[nombres.length-1]}, evidenciando una experiencia satisfactoria en esas dimensiones.`}</p>`;
+      ? `El área con mejor desempeño fue ${nombres[0]}, con valoración consistentemente positiva por parte de los pacientes.`
+      : `Las áreas con desempeño satisfactorio fueron ${nombres.slice(0,-1).join(', ')} y ${nombres[nombres.length-1]}, todas con puntaje igual o superior a 4.0.`}</p>`;
   } else {
-    fortalezasHTML = '<p>No se registraron dimensiones con puntaje consolidado igual o superior a 4.0 en el período analizado. Se recomienda reforzar la atención en todas las áreas.</p>';
+    fortalezasHTML = '<p>No se registraron dimensiones con puntaje igual o superior a 4.0 en el período. Se recomienda reforzar la atención en todas las áreas.</p>';
   }
 
-  // Mejoras texto
+  // Mejoras — todo < 4.0 + indirectas negativas
   let mejorasHTML = '';
+  const criticos = mejorasDims.filter(d => promDimGen(d.key) < 3);
+  const enProceso = mejorasDims.filter(d => { const p = promDimGen(d.key); return p >= 3 && p < 4; });
   if (mejorasDims.length || areasIndirectasMejora.length) {
-    const dimMejora = mejorasDims.sort((a,b)=>promDimGen(a.key)-promDimGen(b.key))
-      .map(d => `<strong>${d.label}</strong> (${fmt(promDimGen(d.key))}/5.0, ${promDimGen(d.key)<3?'nivel crítico':'en proceso'})`);
-    const indMejora = areasIndirectasMejora.map(a => `<strong>${a}</strong>`);
-    const todos = [...dimMejora, ...indMejora];
-    const criticos = mejorasDims.filter(d => promDimGen(d.key) < 3);
-    if (criticos.length) {
-      mejorasHTML = `<p>Se identificaron áreas con puntaje crítico que requieren intervención prioritaria: ${criticos.map(d=>`<strong>${d.label}</strong>`).join(', ')}. Se recomienda revisar los procesos vinculados y establecer acciones correctivas en el corto plazo.</p>`;
-    }
-    if (todos.length) {
-      mejorasHTML += `<p>Las siguientes áreas presentan oportunidades de mejora (puntaje inferior a 4.0): ${todos.join(', ')}. Se sugiere profundizar el análisis cualitativo y articular respuestas con los referentes de cada sector.</p>`;
-    }
+    let partes = [];
+    if (criticos.length) partes.push(`<p>⚠ Áreas críticas (puntaje menor a 3.0): ${criticos.map(d=>`<strong>${d.label}</strong> (${fmt(promDimGen(d.key))}/5.0)`).join(', ')}. Requieren intervención inmediata y acciones correctivas a corto plazo.</p>`);
+    if (enProceso.length) partes.push(`<p>Áreas en proceso de mejora (entre 3.0 y 3.9): ${enProceso.map(d=>`<strong>${d.label}</strong> (${fmt(promDimGen(d.key))}/5.0)`).join(', ')}. Se recomienda articular acciones concretas con los referentes de cada sector.</p>`);
+    if (areasIndirectasMejora.length) partes.push(`<p>Áreas de soporte con comentarios que requieren atención: ${areasIndirectasMejora.map(a=>`<strong>${a}</strong>`).join(', ')}. Aunque no forman parte del cuidado directo, su impacto en la experiencia del paciente es significativo.</p>`);
+    mejorasHTML = partes.join('');
   } else {
-    mejorasHTML = '<p>No se registraron dimensiones con puntaje inferior a 4.0. El desempeño general fue consistentemente alto en el período evaluado.</p>';
+    mejorasHTML = '<p>No se registraron dimensiones con puntaje inferior a 4.0. El desempeño fue satisfactorio en todas las áreas evaluadas.</p>';
   }
 
   const referentes = [...new Set(data.map(e => e.referente).filter(Boolean))];
   const referentesTexto = referentes.length ? referentes.join(' y ') : 'Sofía Garello / Stefani Mansilla';
   const tipoLabel = tipo === 'mensual' ? 'Informe Mensual Consolidado' : 'Informe Semanal de Recorrido';
   const fechaGen = new Date().toLocaleDateString('es-AR', { day: '2-digit', month: 'long', year: 'numeric' });
+  const numBase = (hasEsp || hasFisio) ? 4 : 3;
 
   return `
   <div class="header-block">
@@ -1449,33 +1457,30 @@ function buildInformeHTML(data, titulo, tipo='semanal') {
   </div>
 
   <h2>1. Síntesis General</h2>
-  <p>Durante el período analizado se realizaron <strong>${data.length} encuesta${data.length!==1?'s':''}</strong> a pacientes internados, alcanzando una satisfacción general promedio de <strong>${promG.toFixed(1)}/5.0</strong>, lo que corresponde a un nivel <strong>${nivelTexto}</strong>. ${tendencia} El <strong>${pctSat}%</strong> de los pacientes (${satisfechos} de ${data.length}) otorgaron una valoración de Muy Bueno o Excelente considerando el conjunto de dimensiones evaluadas.${areasCompTexto}</p>
-  <p>Los principales motivos de internación registrados fueron: ${motivoTexto}. El tipo de ingreso predominante fue: ${ingresoTexto}.</p>
+  <p>Durante el período analizado se realizaron <strong>${data.length} encuesta${data.length!==1?'s':''}</strong> a pacientes internados, alcanzando una satisfacción general promedio de <strong>${promG.toFixed(1)}/5.0</strong>, correspondiente a un nivel <strong>${nivelTexto}</strong>. ${tendencia} El <strong>${pctSat}%</strong> de los pacientes (${satisfechos} de ${data.length}) otorgaron una valoración de Muy Bueno o Excelente considerando el conjunto de dimensiones evaluadas —incluyendo servicios principales${hasEsp || hasFisio ? ' y complementarios' : ''}—.${areasCompTexto}</p>
+  <p>Motivos de internación: ${motivoTexto}. Tipo de ingreso: ${ingresoTexto}.</p>
 
   <h2>2. Resultados Consolidados — Servicios Principales</h2>
   <div class="chart-wrap" id="inf-chart-dims"></div>
   ${dimRowsHTML}
 
   ${(hasEsp || hasFisio) ? `<h2>3. Trazabilidad — Servicios Complementarios</h2>
-  <p>Los siguientes servicios complementarios intervinieron durante el período y fueron evaluados por los pacientes en los casos correspondientes:</p>
+  <p>Los siguientes servicios complementarios intervinieron durante el período:</p>
   ${compRowsHTML}` : ''}
 
-  <h2>${(hasEsp || hasFisio) ? '4' : '3'}. Áreas de Soporte e Indirectas</h2>
-  <p>Se registraron interacciones con las siguientes áreas de soporte que, si bien no forman parte de la atención directa, impactan en la experiencia del paciente:</p>
+  <h2>${numBase}. Trazabilidad — Áreas de Soporte e Indirectas</h2>
+  <p>Se incluyen siempre Admisión y Mesa de Atención por su rol clave en el ingreso y contención del paciente, junto a cualquier otra área registrada durante el recorrido:</p>
   ${areasIndirectasHTML}
 
-  <h2>${(hasEsp || hasFisio) ? '5' : '4'}. Fortalezas del Período</h2>
+  <h2>${numBase+1}. Fortalezas del Período <span style="font-size:0.8rem;font-weight:400;color:#7a8fa6;">(puntaje ≥ 4.0)</span></h2>
   ${fortalezasHTML}
 
-  <h2>${(hasEsp || hasFisio) ? '6' : '5'}. Oportunidades de Mejora</h2>
+  <h2>${numBase+2}. Oportunidades de Mejora <span style="font-size:0.8rem;font-weight:400;color:#7a8fa6;">(puntaje < 4.0)</span></h2>
   ${mejorasHTML}
 
-  <h2>${(hasEsp || hasFisio) ? '7' : '6'}. Observaciones por Área de Servicio</h2>
-  <p style="font-size:0.82rem;color:#7a8fa6;margin-bottom:8px;">Las observaciones cualitativas de los pacientes se sintetizan a continuación por área:</p>
-  ${obsRowsHTML || '<p style="color:#a0b0c0;">No se registraron observaciones en este período.</p>'}
-
-  ${Object.keys(obsGenPorArea).length ? `<h2>${(hasEsp || hasFisio) ? '8' : '7'}. Comentarios sobre Áreas Indirectas</h2>
-  ${obsIndirectaHTML}` : ''}
+  <h2>${numBase+3}. Síntesis Cualitativa por Área</h2>
+  <p style="font-size:0.82rem;color:#7a8fa6;margin-bottom:8px;">Las observaciones de los pacientes se sintetizan en lenguaje institucional, sin citas textuales:</p>
+  ${obsRowsHTML}
 
   <div class="chart-wrap" id="inf-chart-dist"></div>
   <div class="chart-wrap" id="inf-chart-evol"></div>
@@ -1485,7 +1490,6 @@ function buildInformeHTML(data, titulo, tipo='semanal') {
     Informe generado automáticamente a partir de encuestas de recorrido.
   </p>`;
 }
-
 function renderInformeCharts(container) {
   // Chart dimensiones dentro del informe
   const wrapDims = container.querySelector('#inf-chart-dims');
@@ -1520,28 +1524,34 @@ function renderInformeCharts(container) {
 }
 
 
-function generarInforme() {
+async function generarInforme() {
   const mes = document.getElementById('informe-mes').value;
   if (!mes) { toast('⚠ Seleccioná un mes', '#e0873a'); return; }
   const data = encuestas.filter(e => e.fecha.startsWith(mes));
   const [y, m] = mes.split('-');
   const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
   const titulo = `Período: ${meses[+m-1]} ${y} (Informe Mensual)`;
-  mostrarInformeHTML(buildInformeHTML(data, titulo, 'mensual'));
+  mostrarLoading('Generando informe...');
+  mostrarInformeHTML(await buildInformeHTML(data, titulo, 'mensual'));
+  ocultarLoading();
 }
 
-function generarInformeSemana() {
+async function generarInformeSemana() {
   const semanas = getSemanas(encuestas);
   if (!semanas.length) { toast('⚠ No hay recorridos', '#e0873a'); return; }
   const ultima = semanas[semanas.length-1];
-  mostrarInformeHTML(buildInformeHTML(ultima.encuestas, `Recorrido: ${ultima.label}`));
+  mostrarLoading('Generando informe...');
+  mostrarInformeHTML(await buildInformeHTML(ultima.encuestas, `Recorrido: ${ultima.label}`));
+  ocultarLoading();
 }
 
-function generarInformeSemanaKey(key) {
+async function generarInformeSemanaKey(key) {
   const semanas = getSemanas(encuestas);
   const s = semanas.find(s => s.key === key);
   if (!s) return;
-  mostrarInformeHTML(buildInformeHTML(s.encuestas, `Recorrido: ${s.label}`));
+  mostrarLoading('Generando informe...');
+  mostrarInformeHTML(await buildInformeHTML(s.encuestas, `Recorrido: ${s.label}`));
+  ocultarLoading();
 }
 
 function mostrarInformeHTML(html) {
@@ -1595,15 +1605,23 @@ function abrirEditar(id) {
     tbody.appendChild(tr);
   });
 
-  // Obs por dimensión
+  // Obs por dimensión (principales + complementarios)
   const obsList = document.getElementById('edit-obs-list');
   obsList.innerHTML = '';
-  DIMS.forEach(d => {
+  const allDimsObs = [...DIMS, DIMS_OPT.esp, DIMS_OPT.fisio];
+  allDimsObs.forEach(d => {
     const val = enc.obs?.[d.key] || '';
     const div = document.createElement('div');
     div.style.cssText = 'display:flex;flex-direction:column;gap:3px;';
     div.innerHTML = `<label style="font-size:0.78rem;color:#7a8fa6;font-weight:600;">${d.label}</label><textarea class="form-textarea edit-obs-field" data-key="${d.key}" style="min-height:44px;font-size:0.83rem;">${val}</textarea>`;
     obsList.appendChild(div);
+  });
+
+  // Obs generales (áreas indirectas)
+  const obsGenList = document.getElementById('edit-obs-generales-list');
+  obsGenList.innerHTML = '';
+  (enc.obsGenerales || []).forEach(og => {
+    agregarObsGeneralEdit(og.area || '', og.texto || '', obsGenList);
   });
 
   // Init checkboxes en modal
@@ -1638,13 +1656,21 @@ async function guardarEdicion() {
   const ingreso = [...document.querySelectorAll('#edit-g-ingreso .checked input')].map(i=>i.value);
   const motivo = [...document.querySelectorAll('#edit-g-motivo .checked input')].map(i=>i.value);
 
+  // Obs generales desde modal
+  const obsGeneralesEdit = [];
+  document.querySelectorAll('#edit-obs-generales-list .obs-general-item').forEach(item => {
+    const area = item.querySelector('.obs-area-nombre')?.value?.trim();
+    const texto = item.querySelector('.obs-area-texto')?.value?.trim();
+    if (area || texto) obsGeneralesEdit.push({ area: area || 'Sin área', texto: texto || '' });
+  });
+
   const updated = {
     fecha: document.getElementById('edit-fecha').value,
     referente: document.getElementById('edit-referente').value,
     habitacion: document.getElementById('edit-habitacion').value,
     piso: document.getElementById('edit-piso').value,
     ingreso, motivo, ratings, obs,
-    obs_generales: enc.obsGenerales || [],
+    obs_generales: obsGeneralesEdit,
   };
 
   try {
@@ -1663,6 +1689,20 @@ async function guardarEdicion() {
     toast('❌ Error al guardar cambios', '#d94f4f');
     console.error(e);
   }
+}
+
+function agregarObsGeneralEdit(areaVal='', textoVal='', container) {
+  const div = document.createElement('div');
+  div.className = 'obs-general-item';
+  div.style.cssText = 'display:flex;gap:8px;align-items:flex-start;background:#f0f4f9;border-radius:10px;padding:10px;';
+  div.innerHTML = `
+    <div style="flex:1;display:flex;flex-direction:column;gap:6px;">
+      <input class="form-input obs-area-nombre" type="text" placeholder="Área o servicio (ej: Mesa de Atención)" value="${areaVal.replace(/"/g,'&quot;')}" style="font-size:0.85rem;">
+      <textarea class="form-textarea obs-area-texto" placeholder="Descripción..." style="min-height:48px;font-size:0.85rem;">${textoVal}</textarea>
+    </div>
+    <button onclick="this.closest('.obs-general-item').remove()" style="background:none;border:none;cursor:pointer;font-size:1.1rem;color:#d94f4f;padding:4px;">✕</button>
+  `;
+  container.appendChild(div);
 }
 
 // ================= FILTRO MES =================
