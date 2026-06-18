@@ -22,7 +22,7 @@
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { font-family: 'Segoe UI', system-ui, sans-serif; background: var(--fondo); color: var(--gris-texto); min-height: 100vh; }
- 
+
   /* HEADER */
   header {
     background: var(--azul-inst);
@@ -872,20 +872,27 @@ function renderDashboard() {
 
   document.getElementById('dash-meta').textContent = `${total} encuesta${total!==1?'s':''} registrada${total!==1?'s':''}`;
 
-  // KPIs
+  // Todas las dimensiones incluyendo opcionales cuando tienen datos
+  const DIMS_ALL = [...DIMS];
+  const hasEsp = data.some(e => e.ratings.especialistas);
+  const hasFisio = data.some(e => e.ratings.fisioterapia);
+  if (hasEsp) DIMS_ALL.push(DIMS_OPT.esp);
+  if (hasFisio) DIMS_ALL.push(DIMS_OPT.fisio);
+
+  // KPIs — promedio incluyendo complementarios cuando existen
   const allProms = data.map(e => {
-    const vals = DIMS.map(d => promDim(e, d.key)).filter(v=>v!==null);
+    const vals = DIMS_ALL.map(d => promDim(e, d.key)).filter(v=>v!==null);
     return vals.length ? vals.reduce((a,b)=>a+b,0)/vals.length : null;
   }).filter(v=>v!==null);
 
   const promGeneral = allProms.length ? (allProms.reduce((a,b)=>a+b,0)/allProms.length) : 0;
   const satisfechos = data.filter(e => {
-    const v = DIMS.map(d=>promDim(e,d.key)).filter(v=>v!==null);
+    const v = DIMS_ALL.map(d=>promDim(e,d.key)).filter(v=>v!==null);
     const p = v.length ? v.reduce((a,b)=>a+b,0)/v.length : 0;
     return p >= 4;
   }).length;
-
   const alertas = data.filter(e => Object.values(e.ratings).some(r => r === 'M' || r === 'R')).length;
+  const conComp = data.filter(e => e.ratings.especialistas || e.ratings.fisioterapia).length;
 
   const kgrid = document.getElementById('kpi-grid');
   kgrid.innerHTML = `
@@ -893,13 +900,26 @@ function renderDashboard() {
     <div class="kpi-card verde"><div class="kpi-label">Satisfacción promedio</div><div class="kpi-val">${promGeneral ? promGeneral.toFixed(1) : '—'}</div><div class="kpi-sub">sobre 5.0</div></div>
     <div class="kpi-card verde"><div class="kpi-label">Alta satisfacción</div><div class="kpi-val">${total ? Math.round(satisfechos/total*100) : 0}%</div><div class="kpi-sub">${satisfechos} pacientes (≥MB)</div></div>
     <div class="kpi-card rojo"><div class="kpi-label">Con alertas</div><div class="kpi-val">${alertas}</div><div class="kpi-sub">tienen M o R en algún ítem</div></div>
+    <div class="kpi-card amarillo"><div class="kpi-label">Con serv. complementarios</div><div class="kpi-val">${conComp}</div><div class="kpi-sub">especialistas o kinesiología</div></div>
   `;
 
-  // Chart Dimensiones
-  const dimLabels = DIMS.map(d => d.label.split(' ').slice(0,3).join(' '));
-  const dimVals = DIMS.map(d => {
+  // Chart Dimensiones — incluye complementarios si hay datos
+  const dimLabels = DIMS_ALL.map(d => d.label.split(' ').slice(0,3).join(' '));
+  const dimVals = DIMS_ALL.map(d => {
     const vals = data.map(e => promDim(e, d.key)).filter(v=>v!==null);
     return vals.length ? +(vals.reduce((a,b)=>a+b,0)/vals.length).toFixed(2) : 0;
+  });
+  const dimColors = DIMS_ALL.map((d, i) => {
+    const isOpt = i >= DIMS.length;
+    const v = dimVals[i];
+    if (isOpt) return v >= 4 ? '#0f6e5688' : v >= 3 ? '#ba751788' : '#a32d2d88';
+    return v >= 4 ? '#2a9d6f88' : v >= 3 ? '#f4a62388' : '#d94f4f88';
+  });
+  const dimBorders = DIMS_ALL.map((d, i) => {
+    const isOpt = i >= DIMS.length;
+    const v = dimVals[i];
+    if (isOpt) return v >= 4 ? '#0f6e56' : v >= 3 ? '#ba7517' : '#a32d2d';
+    return v >= 4 ? '#2a9d6f' : v >= 3 ? '#f4a623' : '#d94f4f';
   });
 
   if (charts.dim) charts.dim.destroy();
@@ -911,15 +931,18 @@ function renderDashboard() {
       datasets: [{
         label: 'Promedio',
         data: dimVals,
-        backgroundColor: dimVals.map(v => v >= 4 ? '#2a9d6f88' : v >= 3 ? '#f4a62388' : '#d94f4f88'),
-        borderColor: dimVals.map(v => v >= 4 ? '#2a9d6f' : v >= 3 ? '#f4a623' : '#d94f4f'),
+        backgroundColor: dimColors,
+        borderColor: dimBorders,
         borderWidth: 2, borderRadius: 6,
       }]
     },
     options: {
       responsive: true,
       scales: { y: { min: 0, max: 5, ticks: { stepSize: 1 } } },
-      plugins: { legend: { display: false } }
+      plugins: {
+        legend: { display: false },
+        tooltip: { callbacks: { label: ctx => ` Promedio: ${ctx.raw}/5.0` } }
+      }
     }
   });
 
@@ -961,7 +984,7 @@ function renderDashboard() {
   const semLabels = semanas.map(s => s.label);
   const semVals = semanas.map(s => {
     const proms = s.encuestas.map(e => {
-      const v = DIMS.map(d=>promDim(e,d.key)).filter(v=>v!==null);
+      const v = DIMS_ALL.map(d=>promDim(e,d.key)).filter(v=>v!==null);
       return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null;
     }).filter(v=>v!==null);
     return proms.length ? +(proms.reduce((a,b)=>a+b,0)/proms.length).toFixed(2) : null;
@@ -1108,8 +1131,6 @@ function renderInformeSemanas() {
 }
 
 // ================= INFORMES =================
-function ratingTexto(r) { return r ? RATING_LABEL[r] : 'No evaluado'; }
-
 function buildInformeData(data, titulo, tipo='semanal') {
   if (!data.length) return 'No hay datos para el período seleccionado.';
 
@@ -1117,101 +1138,142 @@ function buildInformeData(data, titulo, tipo='semanal') {
     const vals = data.map(e => promDim(e, key)).filter(v => v !== null);
     return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
   };
+  const fmt = v => v === null ? 'Sin datos' : v.toFixed(1);
+  const fmtN = v => v === null ? '—' : v.toFixed(1);
 
-  const fmt = v => v === null ? '—' : v.toFixed(1);
+  // Promedio general (todas las dims con datos)
+  const DIMS_ALL = [...DIMS];
+  const hasEsp = data.some(e => e.ratings.especialistas);
+  const hasFisio = data.some(e => e.ratings.fisioterapia);
+  if (hasEsp) DIMS_ALL.push(DIMS_OPT.esp);
+  if (hasFisio) DIMS_ALL.push(DIMS_OPT.fisio);
 
   const allProms = data.map(e => {
-    const v = DIMS.map(d => promDim(e, d.key)).filter(v => v !== null);
+    const v = DIMS_ALL.map(d => promDim(e, d.key)).filter(v => v !== null);
     return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
   }).filter(v => v !== null);
   const promG = allProms.length ? allProms.reduce((a, b) => a + b, 0) / allProms.length : 0;
 
   const satisfechos = data.filter(e => {
-    const v = DIMS.map(d => promDim(e, d.key)).filter(v => v !== null);
+    const v = DIMS_ALL.map(d => promDim(e, d.key)).filter(v => v !== null);
     const p = v.length ? v.reduce((a, b) => a + b, 0) / v.length : 0;
     return p >= 4;
   }).length;
   const pctSat = data.length ? Math.round(satisfechos / data.length * 100) : 0;
 
+  // Conteos
   const motivoCount = {};
   data.forEach(e => (e.motivo || []).forEach(m => { motivoCount[m] = (motivoCount[m] || 0) + 1; }));
-  const motivoTop = Object.entries(motivoCount).sort((a, b) => b[1] - a[1]);
-  const motivoTexto = motivoTop.length
-    ? motivoTop.map(([k, v]) => `${k} (${v} caso${v !== 1 ? 's' : ''})`).join(', ')
-    : 'no especificados';
+  const motivoTexto = Object.entries(motivoCount).sort((a, b) => b[1] - a[1])
+    .map(([k, v]) => `${k} (${v} caso${v !== 1 ? 's' : ''})`).join(', ') || 'no especificados';
 
   const ingresoCount = {};
   data.forEach(e => (e.ingreso || []).forEach(i => { ingresoCount[i] = (ingresoCount[i] || 0) + 1; }));
   const ingresoTexto = Object.entries(ingresoCount).sort((a, b) => b[1] - a[1])
     .map(([k, v]) => `${k} (${v})`).join(', ') || 'no especificado';
 
-  // Destacados y alertas
-  const buenos = DIMS.filter(d => { const p = promDimGen(d.key); return p !== null && p >= 4.3; });
-  const criticos = DIMS.filter(d => { const p = promDimGen(d.key); return p !== null && p < 3; });
-  const medios = DIMS.filter(d => { const p = promDimGen(d.key); return p !== null && p >= 3 && p < 4.3; });
-
-  // Nivel general en texto
+  // Nivel y tendencia
   const nivelTexto = promG >= 4.5 ? 'muy satisfactorio' : promG >= 4 ? 'satisfactorio' : promG >= 3 ? 'regular' : 'bajo';
-  const tendencia = promG >= 4 ? 'La percepción general de los pacientes fue positiva.' : promG >= 3 ? 'La percepción general resultó moderada, con margen de mejora en varias dimensiones.' : 'La percepción general fue desfavorable y requiere atención prioritaria.';
+  const tendencia = promG >= 4 ? 'La percepción general de los pacientes fue positiva.' : promG >= 3 ? 'La percepción general resultó moderada, con margen de mejora en algunas dimensiones.' : 'La percepción general fue desfavorable y requiere atención prioritaria.';
 
-  // Párrafo de resultados por dimensión
+  // Resultados consolidados por dimensión principal
   const dimLines = DIMS.map(d => {
     const p = promDimGen(d.key);
-    if (p === null) return null;
-    return `  ${d.label}: ${fmt(p)}/5.0`;
+    const conteoD = { M:0, R:0, B:0, MB:0, E:0 };
+    data.forEach(e => { const r = e.ratings[d.key]; if (r && conteoD[r]!==undefined) conteoD[r]++; });
+    const total_d = Object.values(conteoD).reduce((a,b)=>a+b,0);
+    const distrib = total_d > 0
+      ? Object.entries(conteoD).filter(([,v])=>v>0).map(([k,v])=>`${RATING_LABEL[k]}: ${v}`).join(', ')
+      : 'sin datos';
+    const semaforo = p === null ? '' : p >= 4 ? '✔' : p >= 3 ? '◆' : '✖';
+    return p !== null ? `  ${semaforo} ${d.label}: ${fmt(p)}/5.0 (${distrib})` : null;
   }).filter(Boolean);
 
-  const espP = promDimGen('especialistas');
-  const fisioP = promDimGen('fisioterapia');
-  if (data.some(e => e.ratings.especialistas) && espP !== null) dimLines.push(`  Médicos Especialistas: ${fmt(espP)}/5.0`);
-  if (data.some(e => e.ratings.fisioterapia) && fisioP !== null) dimLines.push(`  Fisioterapia y Kinesiología: ${fmt(fisioP)}/5.0`);
+  // Servicios complementarios consolidados
+  const compLines = [];
+  if (hasEsp) {
+    const p = promDimGen('especialistas');
+    const n = data.filter(e => e.ratings.especialistas).length;
+    const conteoEsp = { M:0, R:0, B:0, MB:0, E:0 };
+    data.forEach(e => { const r = e.ratings.especialistas; if (r && conteoEsp[r]!==undefined) conteoEsp[r]++; });
+    const distrib = Object.entries(conteoEsp).filter(([,v])=>v>0).map(([k,v])=>`${RATING_LABEL[k]}: ${v}`).join(', ');
+    const semaforo = p === null ? '' : p >= 4 ? '✔' : p >= 3 ? '◆' : '✖';
+    compLines.push(`  ${semaforo} Médicos Especialistas: ${fmt(p)}/5.0 — evaluado en ${n} de ${data.length} casos (${distrib})`);
+  }
+  if (hasFisio) {
+    const p = promDimGen('fisioterapia');
+    const n = data.filter(e => e.ratings.fisioterapia).length;
+    const conteoFisio = { M:0, R:0, B:0, MB:0, E:0 };
+    data.forEach(e => { const r = e.ratings.fisioterapia; if (r && conteoFisio[r]!==undefined) conteoFisio[r]++; });
+    const distrib = Object.entries(conteoFisio).filter(([,v])=>v>0).map(([k,v])=>`${RATING_LABEL[k]}: ${v}`).join(', ');
+    const semaforo = p === null ? '' : p >= 4 ? '✔' : p >= 3 ? '◆' : '✖';
+    compLines.push(`  ${semaforo} Fisioterapia y Kinesiología: ${fmt(p)}/5.0 — evaluado en ${n} de ${data.length} casos (${distrib})`);
+  }
+  const compSeccion = compLines.length
+    ? compLines.join('\n')
+    : '  No se registraron evaluaciones de servicios complementarios en este período.';
 
-  // Párrafo de fortalezas
+  // Fortalezas y mejoras consolidadas
+  const buenos = DIMS_ALL.filter(d => { const p = promDimGen(d.key); return p !== null && p >= 4.3; });
+  const criticos = DIMS_ALL.filter(d => { const p = promDimGen(d.key); return p !== null && p < 3; });
+  const medios = DIMS_ALL.filter(d => { const p = promDimGen(d.key); return p !== null && p >= 3 && p < 4.3; });
+
   let fortalezas = '';
   if (buenos.length) {
-    const nombres = buenos.map(d => `${d.label} (${fmt(promDimGen(d.key))}/5.0)`);
-    if (nombres.length === 1) fortalezas = `El área con mejor desempeño fue ${nombres[0]}, lo que refleja una valoración consistentemente alta por parte de los pacientes.`;
-    else fortalezas = `Las áreas con mejor desempeño fueron ${nombres.slice(0, -1).join(', ')} y ${nombres[nombres.length - 1]}, lo que refleja una valoración consistentemente positiva en esas dimensiones.`;
+    const nombres = buenos.map(d => `${d.label} (${fmtN(promDimGen(d.key))}/5.0)`);
+    fortalezas = nombres.length === 1
+      ? `El área con mejor desempeño consolidado fue ${nombres[0]}, reflejando una valoración consistentemente alta a lo largo del período.`
+      : `Las áreas con mejor desempeño consolidado fueron ${nombres.slice(0,-1).join(', ')} y ${nombres[nombres.length-1]}, con valoraciones consistentemente positivas.`;
   } else {
-    fortalezas = 'En este período no se registraron dimensiones con puntaje destacado (≥ 4.3). Se recomienda reforzar la atención en todas las áreas.';
+    fortalezas = 'No se registraron dimensiones con puntaje consolidado destacado (≥ 4.3). Se recomienda reforzar la atención en todas las áreas.';
   }
 
-  // Párrafo de mejoras
   let mejoras = '';
   if (criticos.length) {
-    const nombres = criticos.map(d => `${d.label} (${fmt(promDimGen(d.key))}/5.0)`);
-    mejoras = `Se identificaron áreas con puntaje crítico que requieren intervención inmediata: ${nombres.join(', ')}. Es recomendable revisar los procesos vinculados y generar acciones correctivas en el corto plazo.`;
+    const nombres = criticos.map(d => `${d.label} (${fmtN(promDimGen(d.key))}/5.0)`);
+    mejoras = `Se identificaron áreas con puntaje crítico que requieren intervención inmediata: ${nombres.join(', ')}. Se recomienda revisar los procesos vinculados y establecer acciones correctivas en el corto plazo.`;
   } else if (medios.length) {
-    const nombres = medios.sort((a,b) => promDimGen(a.key) - promDimGen(b.key)).slice(0,2).map(d => `${d.label} (${fmt(promDimGen(d.key))}/5.0)`);
-    mejoras = `No se registraron puntajes críticos. Sin embargo, las dimensiones con mayor oportunidad de mejora son ${nombres.join(' y ')}, donde las valoraciones se ubican dentro del rango medio.`;
+    const nombres = medios.sort((a,b)=>promDimGen(a.key)-promDimGen(b.key)).slice(0,3).map(d=>`${d.label} (${fmtN(promDimGen(d.key))}/5.0)`);
+    mejoras = `No se registraron puntajes críticos. Las dimensiones con mayor margen de mejora son ${nombres.join(', ')}, con valoraciones en rango medio.`;
   } else {
-    mejoras = 'No se registraron dimensiones con puntajes en rango medio o crítico. El desempeño general fue consistentemente alto.';
+    mejoras = 'No se registraron dimensiones con puntajes en rango medio o crítico. El desempeño general fue consistentemente alto en todas las áreas.';
   }
 
-  // Observaciones cualitativas
-  const obsItems = [];
-  data.forEach(e => DIMS.forEach(d => {
-    if (e.obs[d.key]?.trim()) obsItems.push({ dim: d.label, texto: e.obs[d.key].trim(), hab: e.habitacion || '' });
-  }));
-  const obsTexto = obsItems.length
-    ? obsItems.map(o => `  — ${o.dim}${o.hab ? ` (hab. ${o.hab})` : ''}: "${o.texto}"`).join('\n')
+  // Observaciones cualitativas por dimensión (agrupadas, no por encuesta)
+  const obsPorDim = {};
+  data.forEach(e => {
+    DIMS_ALL.forEach(d => {
+      const txt = e.obs?.[d.key]?.trim();
+      if (txt) {
+        if (!obsPorDim[d.label]) obsPorDim[d.label] = [];
+        obsPorDim[d.label].push(txt);
+      }
+    });
+  });
+  const obsTexto = Object.keys(obsPorDim).length
+    ? Object.entries(obsPorDim).map(([dim, txts]) => `  ${dim}:\n${txts.map(t=>`    · ${t}`).join('\n')}`).join('\n')
     : '  No se registraron observaciones cualitativas en este período.';
 
-  // Observaciones generales (áreas indirectas)
-  const obsGenItems = [];
+  // Observaciones áreas indirectas (agrupadas por área)
+  const obsGenPorArea = {};
   data.forEach(e => (e.obsGenerales || []).forEach(og => {
-    if (og.area || og.texto) obsGenItems.push(og);
+    if (og.area || og.texto) {
+      const area = og.area || 'Sin área';
+      if (!obsGenPorArea[area]) obsGenPorArea[area] = [];
+      if (og.texto) obsGenPorArea[area].push(og.texto);
+    }
   }));
-  const obsGenTexto = obsGenItems.length
-    ? obsGenItems.map(og => `  — ${og.area}: ${og.texto}`).join('\n')
-    : '  No se registraron observaciones sobre áreas indirectas en este período.';
+  const obsGenTexto = Object.keys(obsGenPorArea).length
+    ? Object.entries(obsGenPorArea).map(([area, txts]) => `  ${area}:\n${txts.map(t=>`    · ${t}`).join('\n')}`).join('\n')
+    : '  No se registraron comentarios sobre áreas indirectas en este período.';
 
-  // Referentes que participaron
+  // Referentes
   const referentes = [...new Set(data.map(e => e.referente).filter(Boolean))];
   const referentesTexto = referentes.length ? referentes.join(' y ') : 'Sofía Garello / Stefanía Mansilla';
 
-  const tipoLabel = tipo === 'mensual' ? 'INFORME MENSUAL' : 'INFORME SEMANAL DE RECORRIDO';
+  const tipoLabel = tipo === 'mensual' ? 'INFORME MENSUAL CONSOLIDADO' : 'INFORME SEMANAL DE RECORRIDO';
   const fechaGen = new Date().toLocaleDateString('es-AR', { day: '2-digit', month: 'long', year: 'numeric' });
+  const leyenda = '  ✔ Satisfactorio (≥4.0)   ◆ En proceso (3.0–3.9)   ✖ Crítico (<3.0)';
 
   return `${tipoLabel}
 GRUPO INSTITUTO MÉDICO · Mesa de Experiencia del Paciente
@@ -1222,37 +1284,54 @@ Generado el ${fechaGen} · Referentes: ${referentesTexto}
 1. SÍNTESIS GENERAL
 ───────────────────────────────────────────────────────
 
-Durante el período analizado se realizaron ${data.length} encuesta${data.length !== 1 ? 's' : ''} a pacientes internados, con una satisfacción general promedio de ${fmt(promG)}/5.0, lo que corresponde a un nivel ${nivelTexto}. ${tendencia} El ${pctSat}% de los pacientes (${satisfechos} de ${data.length}) otorgaron una valoración de Muy Bueno o Excelente en el promedio de dimensiones evaluadas.
+Durante el período analizado se realizaron ${data.length} encuesta${data.length !== 1 ? 's' : ''} a pacientes internados, alcanzando una satisfacción general promedio de ${promG.toFixed(1)}/5.0, lo que corresponde a un nivel ${nivelTexto}. ${tendencia} El ${pctSat}% de los pacientes (${satisfechos} de ${data.length}) otorgaron una valoración de Muy Bueno o Excelente considerando el promedio de todas las dimensiones evaluadas.
 
-Los principales motivos de internación registrados fueron: ${motivoTexto}. El tipo de ingreso predominante fue: ${ingresoTexto}.
+Los principales motivos de internación fueron: ${motivoTexto}. Tipo de ingreso: ${ingresoTexto}.
 
 
-2. RESULTADOS POR DIMENSIÓN
+2. RESULTADOS CONSOLIDADOS — SERVICIOS PRINCIPALES
 ───────────────────────────────────────────────────────
+
+${leyenda}
 
 ${dimLines.join('\n')}
 
 
-3. FORTALEZAS DEL PERÍODO
+3. TRAZABILIDAD — SERVICIOS COMPLEMENTARIOS
+───────────────────────────────────────────────────────
+
+${leyenda}
+
+${compSeccion}
+
+
+4. FORTALEZAS DEL PERÍODO
 ───────────────────────────────────────────────────────
 
 ${fortalezas}
 
 
-4. OPORTUNIDADES DE MEJORA
+5. OPORTUNIDADES DE MEJORA
 ───────────────────────────────────────────────────────
 
 ${mejoras}
 
 
-5. OBSERVACIONES DE LOS PACIENTES
+6. OBSERVACIONES DE LOS PACIENTES POR ÁREA
 ───────────────────────────────────────────────────────
 
 ${obsTexto}
 
 
+7. COMENTARIOS SOBRE ÁREAS INDIRECTAS
 ───────────────────────────────────────────────────────
-Mesa de Experiencia del Paciente · Sistema de Hospitalidad y Servicio
+
+${obsGenTexto}
+
+
+───────────────────────────────────────────────────────
+Grupo Instituto Médico · Mesa de Experiencia del Paciente
+Referentes de Hospitalidad y Servicio: Sofía Garello y Stefanía Mansilla
 Informe generado automáticamente a partir de encuestas de recorrido.`;
 }
 
