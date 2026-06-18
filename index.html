@@ -1307,10 +1307,6 @@ async function buildInformeHTML(data, titulo, tipo='semanal') {
     if (og.texto) obsGenPorArea[area].push(og.texto);
   }));
 
-  const areasIndirectasMejora = Object.entries(obsGenPorArea).filter(([, txts]) =>
-    txts.some(t => /mal|demor|problem|falta|insatisf|reclam|queja|molest|negativ/i.test(t))
-  ).map(([area]) => area);
-
   const areasComp = [];
   if (hasEsp) areasComp.push('Médicos Especialistas');
   if (hasFisio) areasComp.push('Fisioterapia y Kinesiología');
