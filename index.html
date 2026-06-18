@@ -1247,7 +1247,7 @@ function renderInformeSemanas() {
 }
 
 // ================= INFORMES =================
-async function buildInformeHTML(data, titulo, tipo='semanal') {
+function buildInformeHTML(data, titulo, tipo='semanal') {
   if (!data.length) return '<p>No hay datos para el período seleccionado.</p>';
 
   const promDimGen = (key) => {
@@ -1324,43 +1324,42 @@ async function buildInformeHTML(data, titulo, tipo='semanal') {
     });
   });
 
-  // Parafrasear usando puntaje numérico (no regex sobre texto)
-  async function parafrasearConIA(textos, area, puntaje=null) {
+  // Parafraseo local basado en puntaje numérico (sin API)
+  function parafrasear(textos, area, puntaje) {
     if (!textos || !textos.length) return null;
-    try {
-      const contextoP = puntaje !== null
-        ? `El puntaje promedio de esta área es ${puntaje.toFixed(1)}/5.0.`
-        : '';
-      const prompt = `Sos redactor de informes institucionales de salud. Se te presentan ${textos.length} observación/es sobre el área "${area}" registradas por pacientes internados. ${contextoP} Redactá UN SOLO párrafo breve (2-3 oraciones) en tono institucional, SIN citar frases textuales, parafraseando el contenido de manera coherente con el puntaje indicado. Solo respondé con el párrafo, sin aclaraciones.\n\nObservaciones:\n${textos.map((t, i) => `${i+1}. ${t}`).join('\n')}`;
-      const res = await fetch('https://api.anthropic.com/v1/messages', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 250, messages: [{ role: 'user', content: prompt }] })
-      });
-      const json = await res.json();
-      return json.content?.[0]?.text?.trim() || null;
-    } catch(e) { return null; }
+    const n = textos.length;
+    if (puntaje !== null) {
+      if (puntaje >= 4.5) return `Las valoraciones sobre ${area} fueron consistentemente positivas a lo largo del período, reflejando una experiencia satisfactoria por parte de los pacientes en esta dimensión.`;
+      if (puntaje >= 4.0) return `En términos generales, los pacientes manifestaron una percepción favorable respecto a ${area}, con comentarios que destacan aspectos positivos de la atención recibida.`;
+      if (puntaje >= 3.0) return `Las observaciones sobre ${area} presentaron valoraciones mixtas. Si bien se reconocen aspectos positivos, también se identifican oportunidades de mejora que merecen atención por parte del equipo.`;
+      return `Se recibieron comentarios sobre ${area} que señalan dificultades en la experiencia de los pacientes. Se recomienda revisar los procesos vinculados a esta área e implementar acciones correctivas.`;
+    }
+    // Sin puntaje (áreas indirectas)
+    if (n === 1) return `Se registró un comentario sobre ${area} que aporta información cualitativa relevante para el seguimiento de esta área de soporte.`;
+    return `Se registraron ${n} comentarios sobre ${area}. Las observaciones aportan información cualitativa sobre el impacto de esta área en la experiencia del paciente durante su internación.`;
   }
 
-  // Parafrasear observaciones por dimensión — pasamos el puntaje para coherencia
-  const obsRowsData = [];
-  for (const [dim, txts] of Object.entries(obsPorDim)) {
+  // Observaciones por dimensión
+  const obsPorDim = {};
+  data.forEach(e => {
+    DIMS_ALL.forEach(d => {
+      const txt = e.obs?.[d.key]?.trim();
+      if (txt) { if (!obsPorDim[d.label]) obsPorDim[d.label] = []; obsPorDim[d.label].push(txt); }
+    });
+  });
+
+  const obsRowsHTML = Object.entries(obsPorDim).map(([dim, txts]) => {
     const dimObj = DIMS_ALL.find(d => d.label === dim);
     const puntaje = dimObj ? promDimGen(dimObj.key) : null;
-    const p = await parafrasearConIA(txts, dim, puntaje);
-    if (p) obsRowsData.push({ dim, texto: p });
-  }
-  const obsRowsHTML = obsRowsData.length
-    ? obsRowsData.map(o => `<div class="obs-card"><strong>${o.dim}:</strong> ${o.texto}</div>`).join('')
-    : '<p style="color:#a0b0c0;">No se registraron observaciones cualitativas en este período.</p>';
+    const p = parafrasear(txts, dim, puntaje);
+    return p ? `<div class="obs-card"><strong>${dim}:</strong> ${p}</div>` : '';
+  }).join('') || '<p style="color:#a0b0c0;">No se registraron observaciones cualitativas en este período.</p>';
 
-  // Parafrasear áreas indirectas — sin puntaje numérico, solo texto
-  const obsIndirectaRows = [];
-  for (const [area, txts] of Object.entries(obsGenPorArea)) {
-    const p = txts.length > 0 ? await parafrasearConIA(txts, area, null) : null;
-    obsIndirectaRows.push({ area, n: txts.length, texto: p });
-  }
-  // Áreas indirectas con mejora: solo las que tienen comentarios registrados
+  // Áreas indirectas
+  const obsIndirectaRows = Object.entries(obsGenPorArea).map(([area, txts]) => ({
+    area, n: txts.length, texto: parafrasear(txts, area, null)
+  }));
+
   const areasIndirectasMejora = Object.entries(obsGenPorArea)
     .filter(([, txts]) => txts.length > 0)
     .map(([area]) => area);
@@ -1520,34 +1519,28 @@ function renderInformeCharts(container) {
 }
 
 
-async function generarInforme() {
+function generarInforme() {
   const mes = document.getElementById('informe-mes').value;
   if (!mes) { toast('⚠ Seleccioná un mes', '#e0873a'); return; }
   const data = encuestas.filter(e => e.fecha.startsWith(mes));
   const [y, m] = mes.split('-');
   const meses = ['Enero','Febrero','Marzo','Abril','Mayo','Junio','Julio','Agosto','Septiembre','Octubre','Noviembre','Diciembre'];
   const titulo = `Período: ${meses[+m-1]} ${y} (Informe Mensual)`;
-  mostrarLoading('Generando informe...');
-  mostrarInformeHTML(await buildInformeHTML(data, titulo, 'mensual'));
-  ocultarLoading();
+  mostrarInformeHTML(buildInformeHTML(data, titulo, 'mensual'));
 }
 
-async function generarInformeSemana() {
+function generarInformeSemana() {
   const semanas = getSemanas(encuestas);
   if (!semanas.length) { toast('⚠ No hay recorridos', '#e0873a'); return; }
   const ultima = semanas[semanas.length-1];
-  mostrarLoading('Generando informe...');
-  mostrarInformeHTML(await buildInformeHTML(ultima.encuestas, `Recorrido: ${ultima.label}`));
-  ocultarLoading();
+  mostrarInformeHTML(buildInformeHTML(ultima.encuestas, `Recorrido: ${ultima.label}`));
 }
 
-async function generarInformeSemanaKey(key) {
+function generarInformeSemanaKey(key) {
   const semanas = getSemanas(encuestas);
   const s = semanas.find(s => s.key === key);
   if (!s) return;
-  mostrarLoading('Generando informe...');
-  mostrarInformeHTML(await buildInformeHTML(s.encuestas, `Recorrido: ${s.label}`));
-  ocultarLoading();
+  mostrarInformeHTML(buildInformeHTML(s.encuestas, `Recorrido: ${s.label}`));
 }
 
 function mostrarInformeHTML(html) {
