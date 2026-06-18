@@ -1315,15 +1315,6 @@ function buildInformeHTML(data, titulo, tipo='semanal') {
     ? ` En el período también se relevó la intervención de: ${areasComp.join(', ')}.`
     : '';
 
-  // Observaciones por dimensión
-  const obsPorDim = {};
-  data.forEach(e => {
-    DIMS_ALL.forEach(d => {
-      const txt = e.obs?.[d.key]?.trim();
-      if (txt) { if (!obsPorDim[d.label]) obsPorDim[d.label] = []; obsPorDim[d.label].push(txt); }
-    });
-  });
-
   // Parafraseo local basado en puntaje numérico (sin API)
   function parafrasear(textos, area, puntaje) {
     if (!textos || !textos.length) return null;
@@ -1334,7 +1325,6 @@ function buildInformeHTML(data, titulo, tipo='semanal') {
       if (puntaje >= 3.0) return `Las observaciones sobre ${area} presentaron valoraciones mixtas. Si bien se reconocen aspectos positivos, también se identifican oportunidades de mejora que merecen atención por parte del equipo.`;
       return `Se recibieron comentarios sobre ${area} que señalan dificultades en la experiencia de los pacientes. Se recomienda revisar los procesos vinculados a esta área e implementar acciones correctivas.`;
     }
-    // Sin puntaje (áreas indirectas)
     if (n === 1) return `Se registró un comentario sobre ${area} que aporta información cualitativa relevante para el seguimiento de esta área de soporte.`;
     return `Se registraron ${n} comentarios sobre ${area}. Las observaciones aportan información cualitativa sobre el impacto de esta área en la experiencia del paciente durante su internación.`;
   }
